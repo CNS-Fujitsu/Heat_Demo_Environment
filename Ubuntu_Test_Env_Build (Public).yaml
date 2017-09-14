@@ -1,0 +1,126 @@
+heat_template_version: 2013-05-23
+# Author: Rob Harding
+# Date: 02/08/2017
+# Purpose: Building a Basic Ubuntu Test Environment With HOT Infrastructure Template
+
+description: K5 Heat template to build a test ubuntu environment within a Project
+
+# Input parameters
+parameters:
+  ubuntu_image:
+    type: string
+    label: Test_Ubuntu
+    description: Ubuntu 14.04 image to be used for compute instance
+    default: "Ubuntu Server 14.04 LTS (English) 02"
+  az:
+    type: string
+    label: Availability Zone
+    description: Region AZ to use
+    default: "uk-1a"
+  default-sshkey:
+    type: string
+    label: ssh key injected into linux systems
+    description: ssh key for linux builds
+    default: "YOUR_KEYPAIR_NAME"    
+  ext_network:
+    type: string
+    label: External Virtual Network
+    description: which external virtual network should be use
+    default: "inf_az1_ext-net01"
+# K5 Infrastructure resources to be built
+resources:
+
+  # Create a new private network
+  ubuntu_test_env_net:
+    type: OS::Neutron::Net
+    properties:
+      availability_zone: { get_param: az }
+      name: "Test_Env_VN"
+
+  # Create a new subnet on the private network
+  ubuntu_test_env_subnet:
+    type: OS::Neutron::Subnet
+    depends_on: ubuntu_test_env_net
+    properties:
+      availability_zone: { get_param: az }
+      name: "Test_Env_Subnet"
+      network_id: { get_resource: ubuntu_test_env_net }
+      cidr: "192.168.0.0/24"
+      gateway_ip: "192.168.0.1"
+
+  # Create a new router
+  ubuntu_test_env_router:
+    type: OS::Neutron::Router
+    properties:
+      availability_zone: { get_param: az }
+      name: "Test_Env_VR"
+      external_gateway_info: { "network": { get_param: ext_network }}
+
+  # Connect an interface on the private network's subnet to the router
+  ubuntu_test_env_router_interface1:
+    type: OS::Neutron::RouterInterface
+    depends_on: ubuntu_test_env_router
+    properties:
+      router_id: { get_resource: ubuntu_test_env_router }
+      subnet_id: { get_resource: ubuntu_test_env_subnet }
+
+   # Create a security group
+  ubuntu_test_env_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      description: Add security group rules for server, SSH, RDP and ping
+      name: "Test_Env_Ubuntu_SG"
+      rules:
+        - remote_ip_prefix: YOUR_IP_ADDRESS/32
+          protocol: tcp
+          port_range_min: 3389
+          port_range_max: 3389
+        - remote_ip_prefix: YOUR_IP_ADDRESS/32
+          protocol: tcp
+          port_range_min: 22
+          port_range_max: 22
+        - remote_ip_prefix: 0.0.0.0/0
+          protocol: icmp
+
+ 
+  ################################ Adding a Server Start ##############################
+
+  # Create a new port for the server interface, assign an ip address and security group    
+  ubuntu_server_port:
+    type: OS::Neutron::Port
+    depends_on: [ ubuntu_test_env_router_interface1,ubuntu_test_env_security_group ]
+    properties:
+      availability_zone: { get_param: az }
+      network_id: { get_resource: ubuntu_test_env_net }
+      security_groups: [{ get_resource: ubuntu_test_env_security_group }]
+      fixed_ips:
+        - subnet_id: { get_resource: ubuntu_test_env_subnet }
+          ip_address: '192.168.0.3'
+
+  # Create a system volume for use with the server
+  sys-vol_ubuntu_server:
+    type: OS::Cinder::Volume
+    properties:
+      availability_zone: { get_param: az }
+      name: "ubuntu_test_env_boot_vol"
+      size: 20
+      volume_type: "M1"
+      image : { get_param: ubuntu_image }
+
+  # Build a server using the system volume defined above
+  ubuntu_server:
+    type: OS::Nova::Server
+    depends_on: [ ubuntu_server_port ]
+    properties:
+      key_name: { get_param: default-sshkey }
+      image: { get_param: ubuntu_image }
+      flavor: "P-1"
+      block_device_mapping: [{"volume_size": "20", "volume_id": {get_resource: sys-vol_ubuntu_server}, "delete_on_termination": True, "device_name": "/dev/vda"}]
+      name: "Test_Ubuntu_P1"
+      admin_user: "ubuntu"
+      #security_groups: [{ get_resource: ubuntu_test_env_security_group }]
+      networks:
+         - port: { get_resource: ubuntu_server_port }
+      
+  ################################ Adding a Server End ################################
+ 
